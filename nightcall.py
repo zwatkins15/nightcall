@@ -11,9 +11,11 @@
 #  apt-get install python3-pip masscan nfs-common xvfb -yqq
 #  pip3 install tqdm; or if offline: pip3 install tqdm-{version}.whl -f ./ --no-index
 
+# Customized for Deer Brook Technical Services
+
 # todo: better sanity checks, documentation
 
-VERSION = "1.0.5"
+VERSION = "1.0.6"
 
 import sys, signal, time, logging, logging.handlers, subprocess, argparse, re, ipaddress
 import xml.etree.ElementTree as etree
@@ -24,7 +26,7 @@ from multiprocessing.dummy import Pool
 # from tqdm import tqdm # exception handler in stub, could be improved
 
 # [ CONSTANTS ]
-CONC_TASKS = 4 # consider multiprocessing.cpu_count()
+CONC_TASKS = 3 # consider multiprocessing.cpu_count()
 TASK_TIMEOUT = 3600
 DISCOVERY_WAIT = 60 # If hosts aren't discovered over slow link, try increasing this
 
@@ -54,17 +56,17 @@ LOG_FILENAME = "Nightcall_{}.log".format(time.strftime(LOG_DATEFMT).replace(":",
 MASSCAN_AVAILABLE = False if subprocess.getstatusoutput("which masscan")[0] else True
 
 # Masscan Strings
-MASSCAN_RATE = "2000"
+MASSCAN_RATE = "1500"
 MASSCAN_RETRIES = "2"
 MASSCAN_PORTS = "21,22,23,25,26,53,80,81,110-111,113,135,139,143,179,199,443,445,465," \
 	"514-515,548,554,587,646,993,995,1025,1026,1027,1033,1035,1443,1720,1723,1884,1885," \
 	"1886,1981,1982,1983,1987,1988,1989,1996,2000,2001,2002,2065,2067,2115,3306,3389,4000," \
-	"4001,4002,5060,5061,5666,5900,6000,6001,6002,7767,7768,8000,8008,8080,8443,8888,9000," \
+	"4001,4002,4786,5060,5061,5666,5900,6000,6001,6002,7767,7768,8000,8008,8080,8443,8888,9000," \
 	"9001,9002,10000,21002,21010,32768,49152,49154,49338,51003,51004,54138,U:53,U:69,U:111," \
    "U:123,U:135,U:137,U:161,U:500,U:514,U:520,U:623,U:1033,U:1434,U:2049,U:4500,U:5353"
 
 MASSCAN = "masscan {targets} -p" + MASSCAN_PORTS  + " --ping --rate " + MASSCAN_RATE + " --retries " \
-   + MASSCAN_RETRIES + " --wait 10 {iface}--open-only --banners -oB masscan.bin"
+   + MASSCAN_RETRIES + " --wait 10 {iface} --open-only --banners -oB masscan.bin"
 
 MASSCAN_CONVERT = "masscan --readscan masscan.bin {type} masscan.{ext}"
 MASSCAN_NEW_CONVERT = "masscan --readscan masscan.bin -oL masscan.txt && " \
@@ -88,7 +90,7 @@ NSE_ARGS = "http-put.url=\"/\",http-put.file=\"{put_file}\",cmd=\"{cmd}\"," \
 NMAP_TCP = "nmap -v0 -n -Pn -O -sSV {ports} --script \'" + NSE_SCRIPTS_TCP + "\'" \
    " --script-args \'" + NSE_ARGS + "\' --version-intensity 5 --max-retries 2" \
    " --max-rtt-timeout 300ms --max-scan-delay 300ms --host-timeout " + \
-   str(int(TASK_TIMEOUT/60)) + "m --open -oA {host}.tcp {iface}{host}"
+   str(int(TASK_TIMEOUT/60)) + "m --open -oA nmap-livehosts.tcp {iface} -iL {host}"
 
 NMAP_UDP_PORTS = "53,67-69,80,88,111,123,135,137-139,161,389,445,500,514,520,623,1033,1433," \
    "1434,1900,2049,4500,5060,5353,49152"
@@ -100,7 +102,7 @@ NSE_SCRIPTS_UDP = "banner,dns-nsid,dns-recursion,dns-service-discovery,ipmi-ciph
 
 NMAP_UDP = "nmap -v0 -n -Pn -O -sUV -p " + NMAP_UDP_PORTS + " --script \'" + NSE_SCRIPTS_UDP + \
    "\' --version-intensity 5 --max-retries 2 --max-rtt-timeout 300ms --max-scan-delay 300ms " \
-   "--host-timeout " + str(int(TASK_TIMEOUT/60)) + "m --open -oA {host}.udp {iface}{host}"
+   "--host-timeout " + str(int(TASK_TIMEOUT/60)) + "m --open -oA nmap-livehosts.udp {iface} -iL {host}"
 
 # HTTP Tools
 WAF_SCAN = "wafw00f -v {scheme}://{host}:{port} > {host}-{port}.{scheme}.waf 2>&1"
@@ -228,9 +230,13 @@ def main(args):
          port_selection = "" if len(hosts) > NMAP_LARGE_HOST_COUNT else "-p-"
  
          jobs = []
-         for target in hosts:
-            jobs.append(NMAP_TCP.format(ports=port_selection, iface=iface_cfg, host=target))
-            jobs.append(NMAP_UDP.format(iface=iface_cfg, host=target))
+         # Old Method was to scan each individual host with an nmap scan.
+         # DBTS Prefers to do one large scan with 1 output.
+         # So I'm adjusting this section to do that using the live_hosts.txt file
+         #for target in hosts:
+         #   jobs.append(NMAP_TCP.format(ports=port_selection, iface=iface_cfg, host=target))
+         #   jobs.append(NMAP_UDP.format(iface=iface_cfg, host=target))
+         jobs.append(NMAP_TCP.format(ports=port_selection, iface=iface_cfg, host="live_hosts.txt"))
          
          printAndLog("Initiating host enumeration (this may take a while)...")
          processJobs(jobs, CONC_TASKS, True)
@@ -534,7 +540,8 @@ def discoverHosts(iface_cfg, targets):
          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
    
    live_hosts = importHosts("live_hosts.txt", None)
-   subprocess.run("rm live_hosts.txt", shell=True, stderr=subprocess.DEVNULL)
+   #Why does it delete the live_hosts.txt file?
+   #subprocess.run("rm live_hosts.txt", shell=True, stderr=subprocess.DEVNULL)
    
    print("\t[ Discovered {} host(s) ]\n".format(len(live_hosts)))
    logging.info("{} Hosts found...\n{}".format(len(live_hosts), list(live_hosts))) 
